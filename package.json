@@ -1,0 +1,19 @@
+{
+  "name": "tambola-backend",
+  "version": "1.0.0",
+  "description": "Online Tambola (Housie) game backend",
+  "scripts": {
+    "dev": "$HOME/.bun/bin/bun --watch src/index.ts",
+    "start": "$HOME/.bun/bin/bun src/index.ts"
+  },
+  "dependencies": {
+    "elysia": "^1.2.0",
+    "@elysiajs/jwt": "^1.2.0",
+    "@elysiajs/cors": "^1.2.0",
+    "@elysiajs/swagger": "^1.2.0",
+    "mongoose": "^8.9.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

@@ -1,0 +1,3 @@
+[run]
+# Auto-install dependencies on bun run
+bun = true
