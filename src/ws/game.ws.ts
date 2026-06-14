@@ -1,6 +1,13 @@
 import { Elysia, t } from "elysia";
+import { Types } from "mongoose";
 import { jwt } from "@elysiajs/jwt";
 import { env } from "../config/env";
+import {
+  TOTAL_NUMBERS,
+  GAME_STATUS,
+  WS_ACTION,
+  WS_EVENT,
+} from "../config/constants";
 import { User } from "../models/user.model";
 import { Game, type WinPattern, type IGame } from "../models/game.model";
 import { Ticket } from "../models/ticket.model";
@@ -17,20 +24,81 @@ import {
 const activeTimers = new Map<string, ReturnType<typeof setInterval>>();
 
 /**
+ * Reference to the Bun server for publishing from timers.
+ * Set via setServer() after app.listen().
+ */
+let serverRef: { publish: (topic: string, data: string) => void } | null = null;
+
+/**
+ * Store the server reference so timers can publish to WS topics.
+ */
+export function setServer(server: { publish: (topic: string, data: string) => void }) {
+  serverRef = server;
+}
+
+/**
+ * Resume number-calling timers for any in-progress games.
+ * Call this on server startup after setServer().
+ */
+export async function resumeActiveGames() {
+  const activeGames = await Game.find({ status: GAME_STATUS.IN_PROGRESS });
+
+  if (activeGames.length === 0) {
+    console.log("📋 No active games to resume.");
+    return;
+  }
+
+  for (const game of activeGames) {
+    console.log(`🔄 Resuming number calling for game ${game.code}`);
+    startNumberCalling(game.code, game.numberCallInterval);
+  }
+
+  console.log(`✅ Resumed ${activeGames.length} active game(s).`);
+}
+
+/**
+ * Resolve winner ObjectIDs to usernames.
+ * Returns a map like { earlyFive: "john", topLine: "jane", ... }
+ */
+async function resolveWinnerNames(
+  winners: Record<string, any>
+): Promise<Record<string, string>> {
+  const resolved: Record<string, string> = {};
+  const ids = Object.entries(winners)
+    .filter(([_, id]) => id != null)
+    .map(([pattern, id]) => ({ pattern, id: id.toString() }));
+
+  if (ids.length === 0) return resolved;
+
+  const users = await User.find(
+    { _id: { $in: ids.map((i) => i.id) } },
+    "username"
+  ).lean();
+
+  const userMap = new Map(users.map((u) => [u._id.toString(), u.username]));
+
+  for (const { pattern, id } of ids) {
+    resolved[pattern] = userMap.get(id) || "Unknown";
+  }
+
+  return resolved;
+}
+
+/**
  * WebSocket handler for real-time Tambola gameplay.
  *
  * Connection URL: /ws/game/:code?token=<JWT>
  *
  * Server → Client messages:
- *   { type: "player_joined", data: { username, playerCount } }
- *   { type: "player_left", data: { username, playerCount } }
- *   { type: "game_started", data: { message } }
- *   { type: "game_paused", data: { message } }
- *   { type: "game_resumed", data: { message } }
- *   { type: "number_called", data: { number, calledNumbers, remaining } }
- *   { type: "claim_result", data: { pattern, winner, valid, message } }
- *   { type: "game_ended", data: { winners } }
- *   { type: "error", data: { message } }
+ *   { type: WS_EVENT.PLAYER_JOINED, data: { username, playerCount } }
+ *   { type: WS_EVENT.PLAYER_LEFT, data: { username, playerCount } }
+ *   { type: WS_EVENT.GAME_STARTED, data: { message } }
+ *   { type: WS_EVENT.GAME_PAUSED, data: { message } }
+ *   { type: WS_EVENT.GAME_RESUMED, data: { message } }
+ *   { type: WS_EVENT.NUMBER_CALLED, data: { number, calledNumbers, remaining } }
+ *   { type: WS_EVENT.CLAIM_RESULT, data: { pattern, winner, valid, message } }
+ *   { type: WS_EVENT.GAME_ENDED, data: { winners } }
+ *   { type: WS_EVENT.ERROR, data: { message } }
  *
  * Client → Server messages:
  *   { action: "start_game" }
@@ -58,21 +126,21 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
       const payload = await ws.data.wsJwt.verify(token);
 
       if (!payload || !payload.sub) {
-        ws.send(JSON.stringify({ type: "error", data: { message: "Invalid token" } }));
+        ws.send(JSON.stringify({ type: WS_EVENT.ERROR, data: { message: "Invalid token" } }));
         ws.close();
         return;
       }
 
       const user = await User.findById(payload.sub);
       if (!user) {
-        ws.send(JSON.stringify({ type: "error", data: { message: "User not found" } }));
+        ws.send(JSON.stringify({ type: WS_EVENT.ERROR, data: { message: "User not found" } }));
         ws.close();
         return;
       }
 
       const game = await Game.findOne({ code: code.toUpperCase() });
       if (!game) {
-        ws.send(JSON.stringify({ type: "error", data: { message: "Game not found" } }));
+        ws.send(JSON.stringify({ type: WS_EVENT.ERROR, data: { message: "Game not found" } }));
         ws.close();
         return;
       }
@@ -85,7 +153,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
       if (!isPlayer) {
         ws.send(
           JSON.stringify({
-            type: "error",
+            type: WS_EVENT.ERROR,
             data: { message: "You must join the game first" },
           })
         );
@@ -105,7 +173,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
       ws.publish(
         code.toUpperCase(),
         JSON.stringify({
-          type: "player_joined",
+          type: WS_EVENT.PLAYER_JOINED,
           data: {
             username: user.username,
             playerCount: game.players.length,
@@ -114,14 +182,15 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
       );
 
       // Send current game state to the connecting player
+      const resolvedWinners = await resolveWinnerNames(game.winners as any);
       ws.send(
         JSON.stringify({
-          type: "game_state",
+          type: WS_EVENT.GAME_STATE,
           data: {
             status: game.status,
             calledNumbers: game.calledNumbers,
             currentNumber: game.currentNumber,
-            winners: game.winners,
+            winners: resolvedWinners,
             playerCount: game.players.length,
           },
         })
@@ -137,7 +206,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
             : messageRaw;
       } catch {
         ws.send(
-          JSON.stringify({ type: "error", data: { message: "Invalid JSON" } })
+          JSON.stringify({ type: WS_EVENT.ERROR, data: { message: "Invalid JSON" } })
         );
         return;
       }
@@ -149,28 +218,28 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
       const game = await Game.findOne({ code: gameCode });
       if (!game) {
         ws.send(
-          JSON.stringify({ type: "error", data: { message: "Game not found" } })
+          JSON.stringify({ type: WS_EVENT.ERROR, data: { message: "Game not found" } })
         );
         return;
       }
 
       switch (message.action) {
         // ─── START GAME ──────────────────────────────────────
-        case "start_game": {
+        case WS_ACTION.START_GAME: {
           if (game.host.toString() !== userId) {
             ws.send(
               JSON.stringify({
-                type: "error",
+                type: WS_EVENT.ERROR,
                 data: { message: "Only the host can start the game" },
               })
             );
             return;
           }
 
-          if (game.status !== "waiting") {
+          if (game.status !== GAME_STATUS.WAITING) {
             ws.send(
               JSON.stringify({
-                type: "error",
+                type: WS_EVENT.ERROR,
                 data: { message: "Game is not in waiting state" },
               })
             );
@@ -194,7 +263,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
           if (!allHaveTickets) {
             ws.send(
               JSON.stringify({
-                type: "error",
+                type: WS_EVENT.ERROR,
                 data: {
                   message: "All players must have at least 1 ticket before starting",
                 },
@@ -203,7 +272,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
             return;
           }
 
-          game.status = "in_progress";
+          game.status = GAME_STATUS.IN_PROGRESS;
           game.startedAt = new Date();
           await game.save();
 
@@ -211,45 +280,45 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
           ws.publish(
             gameCode,
             JSON.stringify({
-              type: "game_started",
+              type: WS_EVENT.GAME_STARTED,
               data: { message: "Game has started!" },
             })
           );
           ws.send(
             JSON.stringify({
-              type: "game_started",
+              type: WS_EVENT.GAME_STARTED,
               data: { message: "Game has started!" },
             })
           );
 
           // Start automatic number calling
-          startNumberCalling(gameCode, game.numberCallInterval, ws);
+          startNumberCalling(gameCode, game.numberCallInterval);
           break;
         }
 
         // ─── PAUSE GAME ─────────────────────────────────────
-        case "pause_game": {
+        case WS_ACTION.PAUSE_GAME: {
           if (game.host.toString() !== userId) {
             ws.send(
               JSON.stringify({
-                type: "error",
+                type: WS_EVENT.ERROR,
                 data: { message: "Only the host can pause the game" },
               })
             );
             return;
           }
 
-          if (game.status !== "in_progress") {
+          if (game.status !== GAME_STATUS.IN_PROGRESS) {
             ws.send(
               JSON.stringify({
-                type: "error",
+                type: WS_EVENT.ERROR,
                 data: { message: "Game is not in progress" },
               })
             );
             return;
           }
 
-          game.status = "paused";
+          game.status = GAME_STATUS.PAUSED;
           await game.save();
 
           // Stop the timer
@@ -258,13 +327,13 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
           ws.publish(
             gameCode,
             JSON.stringify({
-              type: "game_paused",
+              type: WS_EVENT.GAME_PAUSED,
               data: { message: "Game has been paused by host" },
             })
           );
           ws.send(
             JSON.stringify({
-              type: "game_paused",
+              type: WS_EVENT.GAME_PAUSED,
               data: { message: "Game has been paused" },
             })
           );
@@ -272,67 +341,67 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
         }
 
         // ─── RESUME GAME ────────────────────────────────────
-        case "resume_game": {
+        case WS_ACTION.RESUME_GAME: {
           if (game.host.toString() !== userId) {
             ws.send(
               JSON.stringify({
-                type: "error",
+                type: WS_EVENT.ERROR,
                 data: { message: "Only the host can resume the game" },
               })
             );
             return;
           }
 
-          if (game.status !== "paused") {
+          if (game.status !== GAME_STATUS.PAUSED) {
             ws.send(
               JSON.stringify({
-                type: "error",
+                type: WS_EVENT.ERROR,
                 data: { message: "Game is not paused" },
               })
             );
             return;
           }
 
-          game.status = "in_progress";
+          game.status = GAME_STATUS.IN_PROGRESS;
           await game.save();
 
           ws.publish(
             gameCode,
             JSON.stringify({
-              type: "game_resumed",
+              type: WS_EVENT.GAME_RESUMED,
               data: { message: "Game has been resumed" },
             })
           );
           ws.send(
             JSON.stringify({
-              type: "game_resumed",
+              type: WS_EVENT.GAME_RESUMED,
               data: { message: "Game has been resumed" },
             })
           );
 
           // Restart number calling
-          startNumberCalling(gameCode, game.numberCallInterval, ws);
+          startNumberCalling(gameCode, game.numberCallInterval);
           break;
         }
 
         // ─── CLAIM ───────────────────────────────────────────
-        case "claim": {
+        case WS_ACTION.CLAIM: {
           const { pattern, ticketId } = message.payload || {};
 
           if (!pattern || !ticketId) {
             ws.send(
               JSON.stringify({
-                type: "error",
+                type: WS_EVENT.ERROR,
                 data: { message: "Missing pattern or ticketId" },
               })
             );
             return;
           }
 
-          if (game.status !== "in_progress") {
+          if (game.status !== GAME_STATUS.IN_PROGRESS) {
             ws.send(
               JSON.stringify({
-                type: "error",
+                type: WS_EVENT.ERROR,
                 data: { message: "Game is not in progress" },
               })
             );
@@ -343,7 +412,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
           if (!game.availablePatterns.includes(pattern as WinPattern)) {
             ws.send(
               JSON.stringify({
-                type: "error",
+                type: WS_EVENT.ERROR,
                 data: { message: "This pattern is not available in this game" },
               })
             );
@@ -354,7 +423,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
           if (game.winners[pattern as WinPattern]) {
             ws.send(
               JSON.stringify({
-                type: "claim_result",
+                type: WS_EVENT.CLAIM_RESULT,
                 data: {
                   pattern,
                   valid: false,
@@ -375,7 +444,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
           if (!ticket) {
             ws.send(
               JSON.stringify({
-                type: "error",
+                type: WS_EVENT.ERROR,
                 data: { message: "Ticket not found or does not belong to you" },
               })
             );
@@ -393,7 +462,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
             // Bogus claim
             ws.send(
               JSON.stringify({
-                type: "claim_result",
+                type: WS_EVENT.CLAIM_RESULT,
                 data: {
                   pattern,
                   valid: false,
@@ -406,7 +475,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
             ws.publish(
               gameCode,
               JSON.stringify({
-                type: "claim_result",
+                type: WS_EVENT.CLAIM_RESULT,
                 data: {
                   pattern,
                   valid: false,
@@ -419,7 +488,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
           }
 
           // Valid claim!
-          game.winners[pattern as WinPattern] = user._id as any;
+          game.winners[pattern as WinPattern] = new Types.ObjectId(userId) as any;
           await game.save();
 
           // Update user stats
@@ -428,7 +497,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
           });
 
           const claimMsg = {
-            type: "claim_result",
+            type: WS_EVENT.CLAIM_RESULT,
             data: {
               pattern,
               valid: true,
@@ -443,7 +512,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
           // Check if game is complete
           const refreshedGame = await Game.findById(game._id);
           if (refreshedGame && isGameComplete(refreshedGame)) {
-            refreshedGame.status = "completed";
+            refreshedGame.status = GAME_STATUS.COMPLETED;
             refreshedGame.completedAt = new Date();
             await refreshedGame.save();
 
@@ -464,10 +533,11 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
               { $inc: { "stats.gamesWon": 1 } }
             );
 
+            const resolvedEndWinners = await resolveWinnerNames(refreshedGame.winners as any);
             const endMsg = {
-              type: "game_ended",
+              type: WS_EVENT.GAME_ENDED,
               data: {
-                winners: refreshedGame.winners,
+                winners: resolvedEndWinners,
                 message: "All patterns claimed! Game over!",
               },
             };
@@ -481,7 +551,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
         default:
           ws.send(
             JSON.stringify({
-              type: "error",
+              type: WS_EVENT.ERROR,
               data: { message: `Unknown action: ${message.action}` },
             })
           );
@@ -497,7 +567,7 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
         ws.publish(
           gameCode,
           JSON.stringify({
-            type: "player_left",
+            type: WS_EVENT.PLAYER_LEFT,
             data: { username },
           })
         );
@@ -507,62 +577,66 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
 
 /**
  * Start automatic number calling for a game.
+ * Uses the server-level publish to broadcast to all subscribers of the game topic.
  */
 function startNumberCalling(
   gameCode: string,
-  intervalSeconds: number,
-  ws: any
+  intervalSeconds: number
 ): void {
   // Clear any existing timer
   stopNumberCalling(gameCode);
 
   const timer = setInterval(async () => {
-    const game = await Game.findOne({ code: gameCode });
+    try {
+      const game = await Game.findOne({ code: gameCode });
 
-    if (!game || game.status !== "in_progress") {
-      stopNumberCalling(gameCode);
-      return;
-    }
+      if (!game || game.status !== GAME_STATUS.IN_PROGRESS) {
+        stopNumberCalling(gameCode);
+        return;
+      }
 
-    const nextNumber = drawNextNumber(game.calledNumbers);
+      const nextNumber = drawNextNumber(game.calledNumbers);
 
-    if (nextNumber === null) {
-      // All 90 numbers called
-      stopNumberCalling(gameCode);
+      if (nextNumber === null) {
+        // All numbers called
+        stopNumberCalling(gameCode);
 
-      game.status = "completed";
-      game.completedAt = new Date();
+        game.status = GAME_STATUS.COMPLETED;
+        game.completedAt = new Date();
+        await game.save();
+
+        const resolvedTimerWinners = await resolveWinnerNames(game.winners as any);
+        const endMsg = {
+          type: WS_EVENT.GAME_ENDED,
+          data: {
+            winners: resolvedTimerWinners,
+            message: "All numbers have been called! Game over!",
+          },
+        };
+
+        serverRef?.publish(gameCode, JSON.stringify(endMsg));
+        return;
+      }
+
+      // Update game state
+      game.calledNumbers.push(nextNumber);
+      game.currentNumber = nextNumber;
       await game.save();
 
-      const endMsg = {
-        type: "game_ended",
+      // Broadcast to all players in the room
+      const callMsg = {
+        type: WS_EVENT.NUMBER_CALLED,
         data: {
-          winners: game.winners,
-          message: "All numbers have been called! Game over!",
+          number: nextNumber,
+          calledNumbers: game.calledNumbers,
+          remaining: TOTAL_NUMBERS - game.calledNumbers.length,
         },
       };
 
-      ws.publish(gameCode, JSON.stringify(endMsg));
-      return;
+      serverRef?.publish(gameCode, JSON.stringify(callMsg));
+    } catch (err) {
+      console.error(`Error in number calling for game ${gameCode}:`, err);
     }
-
-    // Update game state
-    game.calledNumbers.push(nextNumber);
-    game.currentNumber = nextNumber;
-    await game.save();
-
-    // Broadcast to all players in the room
-    const callMsg = {
-      type: "number_called",
-      data: {
-        number: nextNumber,
-        calledNumbers: game.calledNumbers,
-        remaining: 90 - game.calledNumbers.length,
-      },
-    };
-
-    ws.publish(gameCode, JSON.stringify(callMsg));
-    ws.send(JSON.stringify(callMsg));
   }, intervalSeconds * 1000);
 
   activeTimers.set(gameCode, timer);

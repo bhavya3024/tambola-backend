@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from "mongoose";
+import { USERNAME, DISPLAY_NAME } from "../config/constants";
 
 export interface IUser extends Document {
   username: string;
@@ -13,6 +14,11 @@ export interface IUser extends Document {
   };
   refreshToken?: string;
   isActive: boolean;
+  isEmailVerified: boolean;
+  emailVerificationToken?: string;
+  emailVerificationExpiry?: Date;
+  passwordResetToken?: string;
+  passwordResetExpiry?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -25,9 +31,9 @@ const userSchema = new Schema<IUser>(
       unique: true,
       trim: true,
       lowercase: true,
-      minlength: 3,
-      maxlength: 20,
-      match: /^[a-zA-Z0-9_]+$/,
+      minlength: USERNAME.MIN_LENGTH,
+      maxlength: USERNAME.MAX_LENGTH,
+      match: new RegExp(USERNAME.PATTERN),
     },
     email: {
       type: String,
@@ -45,7 +51,7 @@ const userSchema = new Schema<IUser>(
       type: String,
       required: true,
       trim: true,
-      maxlength: 50,
+      maxlength: DISPLAY_NAME.MAX_LENGTH,
     },
     avatar: {
       type: String,
@@ -64,14 +70,32 @@ const userSchema = new Schema<IUser>(
       type: Boolean,
       default: true,
     },
+    isEmailVerified: {
+      type: Boolean,
+      default: false,
+    },
+    emailVerificationToken: {
+      type: String,
+      select: false,
+    },
+    emailVerificationExpiry: {
+      type: Date,
+      select: false,
+    },
+    passwordResetToken: {
+      type: String,
+      select: false,
+    },
+    passwordResetExpiry: {
+      type: Date,
+      select: false,
+    },
   },
   {
     timestamps: true,
   }
 );
 
-// Indexes
-userSchema.index({ email: 1 });
-userSchema.index({ username: 1 });
+// Indexes (email and username already indexed via unique: true)
 
 export const User = mongoose.model<IUser>("User", userSchema);

@@ -6,7 +6,7 @@ import { connectDB } from "./database/connection";
 import { authController } from "./modules/auth/auth.controller";
 import { gameController } from "./modules/game/game.controller";
 import { ticketController } from "./modules/ticket/ticket.controller";
-import { gameWebSocket } from "./ws/game.ws";
+import { gameWebSocket, setServer, resumeActiveGames } from "./ws/game.ws";
 
 // Connect to MongoDB
 await connectDB();
@@ -42,7 +42,8 @@ const app = new Elysia()
       };
     }
 
-    if (error.message.includes("Unauthorized") || error.message.includes("Invalid")) {
+    const msg = error.message.toLowerCase();
+    if (msg.includes("unauthorized") || msg.includes("invalid") || msg.includes("missing")) {
       set.status = 401;
       return {
         success: false,
@@ -84,6 +85,12 @@ const app = new Elysia()
 
   // ─── Start ────────────────────────────────────────────────
   .listen(env.PORT);
+
+// Give the WS timer system access to the Bun server for publishing
+setServer(app.server!);
+
+// Resume any in-progress games that were interrupted by a restart
+await resumeActiveGames();
 
 console.log(`
 🎯 ══════════════════════════════════════════════

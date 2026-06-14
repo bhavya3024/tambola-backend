@@ -1,21 +1,20 @@
 import mongoose, { Schema, Document, Types } from "mongoose";
+import {
+  PLAYERS,
+  TICKETS_PER_PLAYER,
+  NUMBER_CALL_INTERVAL,
+  GAME_STATUS,
+  ALL_GAME_STATUSES,
+  WIN_PATTERN,
+  ALL_PATTERNS,
+} from "../config/constants";
 
-export type GameStatus = "waiting" | "in_progress" | "paused" | "completed";
+export type GameStatus = typeof GAME_STATUS[keyof typeof GAME_STATUS];
 
-export type WinPattern =
-  | "earlyFive"
-  | "topLine"
-  | "middleLine"
-  | "bottomLine"
-  | "fullHouse";
+export type WinPattern = typeof WIN_PATTERN[keyof typeof WIN_PATTERN];
 
-export const ALL_PATTERNS: WinPattern[] = [
-  "earlyFive",
-  "topLine",
-  "middleLine",
-  "bottomLine",
-  "fullHouse",
-];
+// Re-export ALL_PATTERNS for convenience to consumers who import from model
+export { ALL_PATTERNS };
 
 export interface IGamePlayer {
   user: Types.ObjectId;
@@ -27,6 +26,7 @@ export interface IGame extends Document {
   host: Types.ObjectId;
   status: GameStatus;
   maxPlayers: number;
+  ticketsPerPlayer: number;
   players: IGamePlayer[];
   calledNumbers: number[];
   currentNumber?: number;
@@ -55,14 +55,20 @@ const gameSchema = new Schema<IGame>(
     },
     status: {
       type: String,
-      enum: ["waiting", "in_progress", "paused", "completed"],
-      default: "waiting",
+      enum: ALL_GAME_STATUSES,
+      default: GAME_STATUS.WAITING,
     },
     maxPlayers: {
       type: Number,
-      default: 50,
-      min: 2,
-      max: 200,
+      default: PLAYERS.DEFAULT,
+      min: PLAYERS.MIN,
+      max: PLAYERS.MAX,
+    },
+    ticketsPerPlayer: {
+      type: Number,
+      default: TICKETS_PER_PLAYER.DEFAULT,
+      min: TICKETS_PER_PLAYER.MIN,
+      max: TICKETS_PER_PLAYER.MAX,
     },
     players: [
       {
@@ -80,9 +86,9 @@ const gameSchema = new Schema<IGame>(
     },
     numberCallInterval: {
       type: Number,
-      default: 10, // seconds
-      min: 3,
-      max: 30,
+      default: NUMBER_CALL_INTERVAL.DEFAULT,
+      min: NUMBER_CALL_INTERVAL.MIN,
+      max: NUMBER_CALL_INTERVAL.MAX,
     },
     winners: {
       earlyFive: { type: Schema.Types.ObjectId, ref: "User", default: undefined },
@@ -93,8 +99,8 @@ const gameSchema = new Schema<IGame>(
     },
     availablePatterns: {
       type: [String],
-      enum: ["earlyFive", "topLine", "middleLine", "bottomLine", "fullHouse"],
-      default: ["earlyFive", "topLine", "middleLine", "bottomLine", "fullHouse"],
+      enum: ALL_PATTERNS,
+      default: ALL_PATTERNS,
     },
     startedAt: { type: Date, default: undefined },
     completedAt: { type: Date, default: undefined },
@@ -104,8 +110,7 @@ const gameSchema = new Schema<IGame>(
   }
 );
 
-// Indexes
-gameSchema.index({ code: 1 });
+// Indexes (code already indexed via unique: true)
 gameSchema.index({ status: 1 });
 gameSchema.index({ host: 1 });
 

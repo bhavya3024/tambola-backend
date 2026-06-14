@@ -17,12 +17,18 @@ importers:
       '@elysiajs/swagger':
         specifier: ^1.2.0
         version: 1.3.1(elysia@1.4.28(@sinclair/typebox@0.34.49)(@types/bun@1.3.14)(exact-mirror@1.1.1)(file-type@22.0.1)(openapi-types@12.1.3))
+      '@types/nodemailer':
+        specifier: ^8.0.1
+        version: 8.0.1
       elysia:
         specifier: ^1.2.0
         version: 1.4.28(@sinclair/typebox@0.34.49)(@types/bun@1.3.14)(exact-mirror@1.1.1)(file-type@22.0.1)(openapi-types@12.1.3)
       mongoose:
         specifier: ^8.9.0
         version: 8.24.0
+      nodemailer:
+        specifier: ^8.0.11
+        version: 8.0.11
     devDependencies:
       '@types/bun':
         specifier: latest
@@ -86,6 +92,9 @@ packages:
 
   '@types/node@25.9.3':
     resolution: {integrity: sha512-603BddQMv3pUcr4U2dhujk83N2tTDVr/34wII2B6bJy6g+8WD6yUb11jszNs0gdi4PesVWl7ABt8nYMVpnLUcg==}
+
+  '@types/nodemailer@8.0.1':
+    resolution: {integrity: sha512-PxpaInm8V1JQDd4j0ds5HfvWQk8JupS1C0Picb96QJsrrRDjBH+DlK7L4ZdNSqNULhiZRQHc40nLVShaGxXAMw==}
 
   '@types/webidl-conversions@7.0.3':
     resolution: {integrity: sha512-CiJJvcRtIgzadHCYXw7dqEnMNRjhGZlYK05Mj9OyktqV8uVT8fD2BFOB7S1uwBE3Kj2Z+4UyPmFw/Ixgw/LAlA==}
@@ -215,6 +224,10 @@ packages:
     engines: {node: ^18 || >=20}
     hasBin: true
 
+  nodemailer@8.0.11:
+    resolution: {integrity: sha512-nrO/pDAUKl+wXX+lx16tDLbnm0fW6sK/x8mgohaCpg+CdCEl482bD4tCuAZk2DyliruiNTIZxRCoWkDqJEnAiA==}
+    engines: {node: '>=6.0.0'}
+
   openapi-types@12.1.3:
     resolution: {integrity: sha512-N4YtSYJqghVu4iek2ZUvcN/0aqH1kRDuNqzcycDxhOUpg7GdvLa2F3DgS6yBNhInhv2r/6I0Flkn7CqL8+nIcw==}
 
@@ -335,6 +348,10 @@ snapshots:
     dependencies:
       undici-types: 7.24.6
 
+  '@types/nodemailer@8.0.1':
+    dependencies:
+      '@types/node': 25.9.3
+
   '@types/webidl-conversions@7.0.3': {}
 
   '@types/whatwg-url@11.0.5':
@@ -436,6 +453,8 @@ snapshots:
   ms@2.1.3: {}
 
   nanoid@5.1.11: {}
+
+  nodemailer@8.0.11: {}
 
   openapi-types@12.1.3: {}
 

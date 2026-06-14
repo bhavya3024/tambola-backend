@@ -1,17 +1,33 @@
 import { Elysia } from "elysia";
 import { jwt } from "@elysiajs/jwt";
+import { randomBytes, createHash } from "crypto";
 import { env } from "../../config/env";
+import {
+  PASSWORD_HASH,
+  EMAIL_VERIFICATION_EXPIRY_MS,
+  PASSWORD_RESET_EXPIRY_MS,
+  DEFAULT_EXPIRY_SECONDS,
+} from "../../config/constants";
 import { User } from "../../models/user.model";
 import { authGuard } from "./auth.guard";
-import { registerSchema, loginSchema, refreshSchema } from "./auth.schemas";
+import {
+  registerSchema,
+  loginSchema,
+  refreshSchema,
+  verifyEmailSchema,
+  resendVerificationSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+} from "./auth.schemas";
 import { successResponse, errorResponse } from "../../utils/response";
+import { sendVerificationEmail, sendPasswordResetEmail } from "../../utils/email.service";
 
 /**
  * Convert JWT_EXPIRY like "15m" or "7d" into seconds for exp claim.
  */
 function parseExpiry(expiry: string): number {
   const match = expiry.match(/^(\d+)([smhd])$/);
-  if (!match) return 900; // default 15 min
+  if (!match) return DEFAULT_EXPIRY_SECONDS;
 
   const value = parseInt(match[1], 10);
   const unit = match[2];
@@ -20,8 +36,25 @@ function parseExpiry(expiry: string): number {
     case "m": return value * 60;
     case "h": return value * 3600;
     case "d": return value * 86400;
-    default: return 900;
+    default: return DEFAULT_EXPIRY_SECONDS;
   }
+}
+
+/**
+ * Generate a verification token and its hash.
+ * The raw token is sent to the user; the hash is stored in DB.
+ */
+function generateVerificationToken(): { raw: string; hashed: string } {
+  const raw = randomBytes(32).toString("hex");
+  const hashed = createHash("sha256").update(raw).digest("hex");
+  return { raw, hashed };
+}
+
+/**
+ * Hash a raw verification token (for lookup).
+ */
+function hashToken(raw: string): string {
+  return createHash("sha256").update(raw).digest("hex");
 }
 
 export const authController = new Elysia({ prefix: "/auth" })
@@ -42,7 +75,7 @@ export const authController = new Elysia({ prefix: "/auth" })
   // ─── REGISTER ──────────────────────────────────────────────
   .post(
     "/register",
-    async ({ body, accessJwt, refreshJwt, set }) => {
+    async ({ body, set }) => {
       const { username, email, password, displayName } = body;
 
       // Check if user already exists
@@ -61,55 +94,102 @@ export const authController = new Elysia({ prefix: "/auth" })
 
       // Hash password using Bun's native argon2id
       const hashedPassword = await Bun.password.hash(password, {
-        algorithm: "argon2id",
-        memoryCost: 65536,
-        timeCost: 2,
+        algorithm: PASSWORD_HASH.ALGORITHM,
+        memoryCost: PASSWORD_HASH.MEMORY_COST,
+        timeCost: PASSWORD_HASH.TIME_COST,
       });
 
-      // Create user
+      // Generate verification token
+      const { raw: verifyToken, hashed: hashedVerifyToken } = generateVerificationToken();
+      const verifyExpiry = new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS);
+
+      // Create user (unverified)
       const user = await User.create({
         username,
         email,
         password: hashedPassword,
         displayName,
+        isEmailVerified: false,
+        emailVerificationToken: hashedVerifyToken,
+        emailVerificationExpiry: verifyExpiry,
       });
 
-      // Generate tokens
-      const accessToken = await accessJwt.sign({
-        sub: user._id.toString(),
-        exp: Math.floor(Date.now() / 1000) + parseExpiry(env.JWT_EXPIRY),
+      // Send verification email (fire-and-forget, don't block registration)
+      sendVerificationEmail(email, verifyToken, displayName).catch((err) => {
+        console.error("Failed to send verification email:", err);
       });
-
-      const refreshToken = await refreshJwt.sign({
-        sub: user._id.toString(),
-        exp: Math.floor(Date.now() / 1000) + parseExpiry(env.REFRESH_EXPIRY),
-      });
-
-      // Store hashed refresh token
-      const hashedRefreshToken = await Bun.password.hash(refreshToken, {
-        algorithm: "argon2id",
-        memoryCost: 65536,
-        timeCost: 2,
-      });
-      await User.findByIdAndUpdate(user._id, { refreshToken: hashedRefreshToken });
 
       set.status = 201;
       return successResponse(
         {
-          user: {
-            id: user._id,
-            username: user.username,
-            email: user.email,
-            displayName: user.displayName,
-            stats: user.stats,
-          },
-          accessToken,
-          refreshToken,
+          email: user.email,
+          username: user.username,
         },
-        "Registration successful"
+        "Registration successful! Please check your email to verify your account."
       );
     },
     registerSchema
+  )
+
+  // ─── VERIFY EMAIL ──────────────────────────────────────────
+  .post(
+    "/verify-email",
+    async ({ body, set }) => {
+      const hashedToken = hashToken(body.token);
+
+      const user = await User.findOne({
+        emailVerificationToken: hashedToken,
+        emailVerificationExpiry: { $gt: new Date() },
+      }).select("+emailVerificationToken +emailVerificationExpiry");
+
+      if (!user) {
+        set.status = 400;
+        return errorResponse("Invalid or expired verification link. Please request a new one.");
+      }
+
+      // Mark as verified and clear token
+      user.isEmailVerified = true;
+      user.emailVerificationToken = undefined;
+      user.emailVerificationExpiry = undefined;
+      await user.save();
+
+      return successResponse(null, "Email verified successfully! You can now log in.");
+    },
+    verifyEmailSchema
+  )
+
+  // ─── RESEND VERIFICATION ───────────────────────────────────
+  .post(
+    "/resend-verification",
+    async ({ body, set }) => {
+      const user = await User.findOne({ email: body.email.toLowerCase() });
+
+      if (!user) {
+        // Don't reveal whether the email exists
+        return successResponse(null, "If that email is registered, a verification link has been sent.");
+      }
+
+      if (user.isEmailVerified) {
+        set.status = 400;
+        return errorResponse("Email is already verified. You can log in.");
+      }
+
+      // Generate new token
+      const { raw: verifyToken, hashed: hashedVerifyToken } = generateVerificationToken();
+      const verifyExpiry = new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS);
+
+      await User.findByIdAndUpdate(user._id, {
+        emailVerificationToken: hashedVerifyToken,
+        emailVerificationExpiry: verifyExpiry,
+      });
+
+      sendVerificationEmail(user.email, verifyToken, user.displayName).catch((err) => {
+        console.error("Failed to send verification email:", err);
+      });
+
+      return successResponse(null, "If that email is registered, a verification link has been sent.");
+    },
+    resendVerificationSchema
   )
 
   // ─── LOGIN ─────────────────────────────────────────────────
@@ -133,6 +213,12 @@ export const authController = new Elysia({ prefix: "/auth" })
         return errorResponse("Account is deactivated");
       }
 
+      // Check email verification
+      if (!user.isEmailVerified) {
+        set.status = 403;
+        return errorResponse("Please verify your email before logging in. Check your inbox for the verification link.");
+      }
+
       // Verify password
       const isValidPassword = await Bun.password.verify(password, user.password);
 
@@ -154,9 +240,9 @@ export const authController = new Elysia({ prefix: "/auth" })
 
       // Store hashed refresh token
       const hashedRefreshToken = await Bun.password.hash(refreshToken, {
-        algorithm: "argon2id",
-        memoryCost: 65536,
-        timeCost: 2,
+        algorithm: PASSWORD_HASH.ALGORITHM,
+        memoryCost: PASSWORD_HASH.MEMORY_COST,
+        timeCost: PASSWORD_HASH.TIME_COST,
       });
       await User.findByIdAndUpdate(user._id, { refreshToken: hashedRefreshToken });
 
@@ -221,9 +307,9 @@ export const authController = new Elysia({ prefix: "/auth" })
 
       // Rotate refresh token
       const hashedRefreshToken = await Bun.password.hash(newRefreshToken, {
-        algorithm: "argon2id",
-        memoryCost: 65536,
-        timeCost: 2,
+        algorithm: PASSWORD_HASH.ALGORITHM,
+        memoryCost: PASSWORD_HASH.MEMORY_COST,
+        timeCost: PASSWORD_HASH.TIME_COST,
       });
       await User.findByIdAndUpdate(user._id, { refreshToken: hashedRefreshToken });
 
@@ -236,6 +322,70 @@ export const authController = new Elysia({ prefix: "/auth" })
       );
     },
     refreshSchema
+  )
+
+  // ─── FORGOT PASSWORD ──────────────────────────────────────────
+  .post(
+    "/forgot-password",
+    async ({ body }) => {
+      const user = await User.findOne({ email: body.email.toLowerCase() });
+
+      // Always return success to avoid leaking whether email exists
+      if (!user) {
+        return successResponse(null, "If that email is registered, a password reset link has been sent.");
+      }
+
+      // Generate reset token (1 hour expiry)
+      const { raw: resetToken, hashed: hashedResetToken } = generateVerificationToken();
+      const resetExpiry = new Date(Date.now() + PASSWORD_RESET_EXPIRY_MS);
+
+      await User.findByIdAndUpdate(user._id, {
+        passwordResetToken: hashedResetToken,
+        passwordResetExpiry: resetExpiry,
+      });
+
+      sendPasswordResetEmail(user.email, resetToken, user.displayName).catch((err) => {
+        console.error("Failed to send password reset email:", err);
+      });
+
+      return successResponse(null, "If that email is registered, a password reset link has been sent.");
+    },
+    forgotPasswordSchema
+  )
+
+  // ─── RESET PASSWORD ───────────────────────────────────────────
+  .post(
+    "/reset-password",
+    async ({ body, set }) => {
+      const hashedToken = hashToken(body.token);
+
+      const user = await User.findOne({
+        passwordResetToken: hashedToken,
+        passwordResetExpiry: { $gt: new Date() },
+      }).select("+passwordResetToken +passwordResetExpiry");
+
+      if (!user) {
+        set.status = 400;
+        return errorResponse("Invalid or expired reset link. Please request a new one.");
+      }
+
+      // Hash the new password
+      const hashedPassword = await Bun.password.hash(body.password, {
+        algorithm: PASSWORD_HASH.ALGORITHM,
+        memoryCost: PASSWORD_HASH.MEMORY_COST,
+        timeCost: PASSWORD_HASH.TIME_COST,
+      });
+
+      // Update password and clear reset token + invalidate sessions
+      user.password = hashedPassword;
+      user.passwordResetToken = undefined;
+      user.passwordResetExpiry = undefined;
+      user.refreshToken = undefined;
+      await user.save();
+
+      return successResponse(null, "Password reset successfully! You can now log in with your new password.");
+    },
+    resetPasswordSchema
   )
 
   // ─── GET ME (protected) ────────────────────────────────────

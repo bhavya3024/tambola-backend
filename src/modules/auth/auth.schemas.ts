@@ -1,4 +1,5 @@
 import { t } from "elysia";
+import { USERNAME, PASSWORD, DISPLAY_NAME } from "../../config/constants";
 
 /**
  * Validation schemas for authentication endpoints.
@@ -6,10 +7,10 @@ import { t } from "elysia";
 
 export const registerSchema = {
   body: t.Object({
-    username: t.String({ minLength: 3, maxLength: 20, pattern: "^[a-zA-Z0-9_]+$" }),
+    username: t.String({ minLength: USERNAME.MIN_LENGTH, maxLength: USERNAME.MAX_LENGTH, pattern: USERNAME.PATTERN }),
     email: t.String({ format: "email" }),
-    password: t.String({ minLength: 6, maxLength: 128 }),
-    displayName: t.String({ minLength: 1, maxLength: 50 }),
+    password: t.String({ minLength: PASSWORD.MIN_LENGTH, maxLength: PASSWORD.MAX_LENGTH }),
+    displayName: t.String({ minLength: DISPLAY_NAME.MIN_LENGTH, maxLength: DISPLAY_NAME.MAX_LENGTH }),
   }),
 };
 
@@ -23,5 +24,30 @@ export const loginSchema = {
 export const refreshSchema = {
   body: t.Object({
     refreshToken: t.String({ minLength: 1 }),
+  }),
+};
+
+export const verifyEmailSchema = {
+  body: t.Object({
+    token: t.String({ minLength: 1 }),
+  }),
+};
+
+export const resendVerificationSchema = {
+  body: t.Object({
+    email: t.String({ format: "email" }),
+  }),
+};
+
+export const forgotPasswordSchema = {
+  body: t.Object({
+    email: t.String({ format: "email" }),
+  }),
+};
+
+export const resetPasswordSchema = {
+  body: t.Object({
+    token: t.String({ minLength: 1 }),
+    password: t.String({ minLength: PASSWORD.MIN_LENGTH, maxLength: PASSWORD.MAX_LENGTH }),
   }),
 };
