@@ -58,7 +58,7 @@ export const DISPLAY_NAME = {
 // ─── Email ───────────────────────────────────────────────────
 
 /** Default sender for outgoing emails */
-export const DEFAULT_EMAIL_FROM = "Tambola <noreply@tambola.app>";
+export const DEFAULT_EMAIL_FROM = "Tambola <noreply@bhavya-dhiman.dev>";
 
 // ─── Frontend ────────────────────────────────────────────────
 
