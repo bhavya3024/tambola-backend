@@ -55,20 +55,10 @@ export const DISPLAY_NAME = {
   MAX_LENGTH: 50,
 };
 
-// ─── Email / SMTP ────────────────────────────────────────────
+// ─── Email ───────────────────────────────────────────────────
 
-/** SMTP port defaults and known secure port */
-export const SMTP = {
-  DEFAULT_PORT: 587,
-  SECURE_PORT: 465,
-  DEFAULT_FROM: "Tambola <noreply@tambola.app>",
-};
-
-/** Ethereal dev SMTP config */
-export const ETHEREAL = {
-  HOST: "smtp.ethereal.email",
-  PORT: 587,
-};
+/** Default sender for outgoing emails */
+export const DEFAULT_EMAIL_FROM = "Tambola <noreply@tambola.app>";
 
 // ─── Frontend ────────────────────────────────────────────────
 

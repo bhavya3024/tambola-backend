@@ -8,8 +8,8 @@ import {
   DEFAULT_MONGODB_URI,
   DEFAULT_JWT_EXPIRY,
   DEFAULT_REFRESH_EXPIRY,
-  SMTP,
   DEFAULT_FRONTEND_URL,
+  DEFAULT_EMAIL_FROM,
 } from "./constants";
 
 export const env = {
@@ -20,12 +20,9 @@ export const env = {
   REFRESH_SECRET: process.env.REFRESH_SECRET || "tambola-refresh-secret-key-change-in-production",
   REFRESH_EXPIRY: process.env.REFRESH_EXPIRY || DEFAULT_REFRESH_EXPIRY,
 
-  // Email (SMTP)
-  SMTP_HOST: process.env.SMTP_HOST || "",
-  SMTP_PORT: parseInt(process.env.SMTP_PORT || String(SMTP.DEFAULT_PORT), 10),
-  SMTP_USER: process.env.SMTP_USER || "",
-  SMTP_PASS: process.env.SMTP_PASS || "",
-  SMTP_FROM: process.env.SMTP_FROM || SMTP.DEFAULT_FROM,
+  // Email (Resend HTTP API)
+  RESEND_API_KEY: process.env.RESEND_API_KEY || "",
+  EMAIL_FROM: process.env.EMAIL_FROM || DEFAULT_EMAIL_FROM,
 
   // Frontend URL for email links
   FRONTEND_URL: process.env.FRONTEND_URL || DEFAULT_FRONTEND_URL,
@@ -33,7 +30,7 @@ export const env = {
 
 // Validate critical env vars in production
 if (process.env.NODE_ENV === "production") {
-  const required = ["JWT_SECRET", "REFRESH_SECRET", "MONGODB_URI", "SMTP_HOST", "SMTP_USER", "SMTP_PASS"] as const;
+  const required = ["JWT_SECRET", "REFRESH_SECRET", "MONGODB_URI", "RESEND_API_KEY"] as const;
   for (const key of required) {
     if (!process.env[key]) {
       throw new Error(`Missing required environment variable: ${key}`);
