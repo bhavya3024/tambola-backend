@@ -84,11 +84,8 @@ export const authController = new Elysia({ prefix: "/auth" })
       );
 
       // Check if a user with this username already exists
-      const userWithUsername = await User.findOne({ username }).select(
-        "+emailVerificationToken +emailVerificationExpiry"
-      );
+      const userWithUsername = await User.findOne({ username });
 
-      // Scenario 1: Existing user with this email
       if (userWithEmail) {
         if (userWithEmail.isEmailVerified) {
           set.status = 409;
@@ -96,19 +93,13 @@ export const authController = new Elysia({ prefix: "/auth" })
         }
 
         // Email exists but is NOT verified. We can reuse/update this user record.
-        // But first, check if the username they supplied is taken by someone else who is VERIFIED.
+        // But first, make sure the requested username is not already taken by ANOTHER user with a different email.
         if (
           userWithUsername &&
           userWithUsername._id.toString() !== userWithEmail._id.toString()
         ) {
-          if (userWithUsername.isEmailVerified) {
-            set.status = 409;
-            return errorResponse("Username already taken");
-          } else {
-            // The username is taken by a different unverified user.
-            // Since that user is unverified, we can delete them to avoid duplicate key errors.
-            await User.deleteOne({ _id: userWithUsername._id });
-          }
+          set.status = 409;
+          return errorResponse("Username already taken");
         }
 
         // Hash password using Bun's native argon2id
@@ -150,54 +141,13 @@ export const authController = new Elysia({ prefix: "/auth" })
         );
       }
 
-      // Scenario 2: Email doesn't exist, but username exists and is unverified.
-      // We can override/update the details of this user (including email).
+      // If email does not exist, check if username is already taken by any user (since email is different)
       if (userWithUsername) {
-        if (userWithUsername.isEmailVerified) {
-          set.status = 409;
-          return errorResponse("Username already taken");
-        }
-
-        // Hash password using Bun's native argon2id
-        const hashedPassword = await Bun.password.hash(password, {
-          algorithm: PASSWORD_HASH.ALGORITHM,
-          memoryCost: PASSWORD_HASH.MEMORY_COST,
-          timeCost: PASSWORD_HASH.TIME_COST,
-        });
-
-        // Generate verification token
-        const { raw: verifyToken, hashed: hashedVerifyToken } =
-          generateVerificationToken();
-        const verifyExpiry = new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS);
-
-        // Override the existing unverified user details (email and other fields)
-        userWithUsername.email = email;
-        userWithUsername.password = hashedPassword;
-        userWithUsername.displayName = displayName;
-        userWithUsername.emailVerificationToken = hashedVerifyToken;
-        userWithUsername.emailVerificationExpiry = verifyExpiry;
-        userWithUsername.refreshToken = undefined;
-        userWithUsername.passwordResetToken = undefined;
-        userWithUsername.passwordResetExpiry = undefined;
-
-        await userWithUsername.save();
-
-        // Send verification email (fire-and-forget, don't block registration)
-        sendVerificationEmail(email, verifyToken, displayName).catch((err) => {
-          console.error("Failed to send verification email:", err);
-        });
-
-        set.status = 200;
-        return successResponse(
-          {
-            email: userWithUsername.email,
-            username: userWithUsername.username,
-          },
-          "Registration successful! Please check your email to verify your account."
-        );
+        set.status = 409;
+        return errorResponse("Username already taken");
       }
 
-      // Scenario 3: Neither email nor username exists. Create new user.
+      // Neither email nor username exists. Create new user.
       const hashedPassword = await Bun.password.hash(password, {
         algorithm: PASSWORD_HASH.ALGORITHM,
         memoryCost: PASSWORD_HASH.MEMORY_COST,
