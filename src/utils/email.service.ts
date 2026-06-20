@@ -1,39 +1,47 @@
+import nodemailer from "nodemailer";
+import type { Transporter } from "nodemailer";
 import { env } from "../config/env";
+import { SMTP, ETHEREAL } from "../config/constants";
+
+let transporter: Transporter | null = null;
 
 /**
- * Send an email via Resend's HTTP API.
- * https://resend.com/docs/api-reference/emails/send-email
+ * Get or create the nodemailer transporter.
+ * Uses Ethereal (fake SMTP) if no SMTP_HOST is configured — great for dev.
  */
-async function sendEmail(to: string, subject: string, html: string): Promise<void> {
-  if (!env.RESEND_API_KEY) {
-    // Dev fallback — just log the email
-    console.log(`📧 [DEV] Would send email to: ${to}`);
-    console.log(`   Subject: ${subject}`);
-    console.log(`   (Set RESEND_API_KEY to send real emails)`);
-    return;
+async function getTransporter(): Promise<Transporter> {
+  if (transporter) return transporter;
+
+  if (env.SMTP_HOST) {
+    // Production / real SMTP
+    transporter = nodemailer.createTransport({
+      host: env.SMTP_HOST,
+      port: env.SMTP_PORT,
+      secure: env.SMTP_PORT === SMTP.SECURE_PORT,
+      auth: {
+        user: env.SMTP_USER,
+        pass: env.SMTP_PASS,
+      },
+    });
+    console.log(`📧 Email configured: ${env.SMTP_HOST}:${env.SMTP_PORT}`);
+  } else {
+    // Dev — use Ethereal fake SMTP
+    const testAccount = await nodemailer.createTestAccount();
+    transporter = nodemailer.createTransport({
+      host: ETHEREAL.HOST,
+      port: ETHEREAL.PORT,
+      secure: false,
+      auth: {
+        user: testAccount.user,
+        pass: testAccount.pass,
+      },
+    });
+    console.log(`📧 Email configured: Ethereal (dev mode)`);
+    console.log(`   Preview emails at: https://ethereal.email/login`);
+    console.log(`   User: ${testAccount.user} / Pass: ${testAccount.pass}`);
   }
 
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${env.RESEND_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: env.EMAIL_FROM,
-      to: [to],
-      subject,
-      html,
-    }),
-  });
-
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(`Resend API error (${res.status}): ${JSON.stringify(error)}`);
-  }
-
-  const data = await res.json();
-  console.log(`📧 Email sent to ${to} (id: ${data.id})`);
+  return transporter;
 }
 
 /**
@@ -108,7 +116,20 @@ export async function sendVerificationEmail(
 </body>
 </html>`;
 
-  await sendEmail(to, "🎯 Verify your Tambola account", html);
+  const transport = await getTransporter();
+
+  const info = await transport.sendMail({
+    from: env.SMTP_FROM,
+    to,
+    subject: "🎯 Verify your Tambola account",
+    html,
+  });
+
+  // In dev mode, log preview URL
+  const previewUrl = nodemailer.getTestMessageUrl(info);
+  if (previewUrl) {
+    console.log(`📧 Preview email: ${previewUrl}`);
+  }
 }
 
 /**
@@ -183,5 +204,18 @@ export async function sendPasswordResetEmail(
 </body>
 </html>`;
 
-  await sendEmail(to, "🔑 Reset your Tambola password", html);
+  const transport = await getTransporter();
+
+  const info = await transport.sendMail({
+    from: env.SMTP_FROM,
+    to,
+    subject: "🔑 Reset your Tambola password",
+    html,
+  });
+
+  // In dev mode, log preview URL
+  const previewUrl = nodemailer.getTestMessageUrl(info);
+  if (previewUrl) {
+    console.log(`📧 Preview reset email: ${previewUrl}`);
+  }
 }
