@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Online Tambola (Housie) game backend",
   "scripts": {
-    "dev": "bun --watch src/index.ts",
+    "dev": "bun --watch --inspect src/index.ts",
     "start": "bun src/index.ts"
   },
   "dependencies": {
