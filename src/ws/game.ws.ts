@@ -18,10 +18,10 @@ import {
 } from "../modules/game/game.service";
 
 /**
- * Active game timers — tracks setInterval IDs for number calling.
+ * Active game timers — tracks setTimeout IDs for number calling.
  * Key: game code, Value: Timer reference
  */
-const activeTimers = new Map<string, ReturnType<typeof setInterval>>();
+const activeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 /**
  * Reference to the Bun server for publishing from timers.
@@ -576,70 +576,89 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
   });
 
 /**
+ * Get a random delay between min and max seconds (inclusive).
+ */
+function getRandomDelay(minSec: number = 2, maxSec: number = 6): number {
+  return (Math.floor(Math.random() * (maxSec - minSec + 1)) + minSec) * 1000;
+}
+
+/**
  * Start automatic number calling for a game.
+ * Uses recursive setTimeout with a random delay (2-6 seconds) between each call.
  * Uses the server-level publish to broadcast to all subscribers of the game topic.
  */
-function startNumberCalling(
+export function startNumberCalling(
   gameCode: string,
-  intervalSeconds: number
+  _intervalSeconds?: number
 ): void {
   // Clear any existing timer
   stopNumberCalling(gameCode);
 
-  const timer = setInterval(async () => {
-    try {
-      const game = await Game.findOne({ code: gameCode });
+  function scheduleNext() {
+    const delay = getRandomDelay(2, 6);
 
-      if (!game || game.status !== GAME_STATUS.IN_PROGRESS) {
-        stopNumberCalling(gameCode);
-        return;
-      }
+    const timer = setTimeout(async () => {
+      try {
+        const game = await Game.findOne({ code: gameCode });
 
-      const nextNumber = drawNextNumber(game.calledNumbers);
+        if (!game || game.status !== GAME_STATUS.IN_PROGRESS) {
+          stopNumberCalling(gameCode);
+          return;
+        }
 
-      if (nextNumber === null) {
-        // All numbers called
-        stopNumberCalling(gameCode);
+        const nextNumber = drawNextNumber(game.calledNumbers);
 
-        game.status = GAME_STATUS.COMPLETED;
-        game.completedAt = new Date();
+        if (nextNumber === null) {
+          // All numbers called
+          stopNumberCalling(gameCode);
+
+          game.status = GAME_STATUS.COMPLETED;
+          game.completedAt = new Date();
+          await game.save();
+
+          const resolvedTimerWinners = await resolveWinnerNames(game.winners as any);
+          const endMsg = {
+            type: WS_EVENT.GAME_ENDED,
+            data: {
+              winners: resolvedTimerWinners,
+              message: "All numbers have been called! Game over!",
+            },
+          };
+
+          serverRef?.publish(gameCode, JSON.stringify(endMsg));
+          return;
+        }
+
+        // Update game state
+        game.calledNumbers.push(nextNumber);
+        game.currentNumber = nextNumber;
         await game.save();
 
-        const resolvedTimerWinners = await resolveWinnerNames(game.winners as any);
-        const endMsg = {
-          type: WS_EVENT.GAME_ENDED,
+        // Broadcast to all players in the room
+        const callMsg = {
+          type: WS_EVENT.NUMBER_CALLED,
           data: {
-            winners: resolvedTimerWinners,
-            message: "All numbers have been called! Game over!",
+            number: nextNumber,
+            calledNumbers: game.calledNumbers,
+            remaining: TOTAL_NUMBERS - game.calledNumbers.length,
           },
         };
 
-        serverRef?.publish(gameCode, JSON.stringify(endMsg));
-        return;
+        serverRef?.publish(gameCode, JSON.stringify(callMsg));
+
+        // Schedule the next number with a new random delay
+        scheduleNext();
+      } catch (err) {
+        console.error(`Error in number calling for game ${gameCode}:`, err);
+        // Still try to continue on error
+        scheduleNext();
       }
+    }, delay);
 
-      // Update game state
-      game.calledNumbers.push(nextNumber);
-      game.currentNumber = nextNumber;
-      await game.save();
+    activeTimers.set(gameCode, timer);
+  }
 
-      // Broadcast to all players in the room
-      const callMsg = {
-        type: WS_EVENT.NUMBER_CALLED,
-        data: {
-          number: nextNumber,
-          calledNumbers: game.calledNumbers,
-          remaining: TOTAL_NUMBERS - game.calledNumbers.length,
-        },
-      };
-
-      serverRef?.publish(gameCode, JSON.stringify(callMsg));
-    } catch (err) {
-      console.error(`Error in number calling for game ${gameCode}:`, err);
-    }
-  }, intervalSeconds * 1000);
-
-  activeTimers.set(gameCode, timer);
+  scheduleNext();
 }
 
 /**
@@ -648,7 +667,8 @@ function startNumberCalling(
 function stopNumberCalling(gameCode: string): void {
   const timer = activeTimers.get(gameCode);
   if (timer) {
-    clearInterval(timer);
+    clearTimeout(timer);
     activeTimers.delete(gameCode);
   }
 }
+

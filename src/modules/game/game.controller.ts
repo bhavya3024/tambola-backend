@@ -7,6 +7,7 @@ import { generateGameCode } from "./game.service";
 import { createGameSchema } from "./game.schemas";
 import { generateTickets } from "../ticket/ticket.generator";
 import { successResponse, errorResponse } from "../../utils/response";
+import { startNumberCalling } from "../../ws/game.ws";
 import {
   PLAYERS,
   NUMBER_CALL_INTERVAL,
@@ -22,6 +23,16 @@ export const gameController = new Elysia({ prefix: "/games" })
   .post(
     "/",
     async ({ body, currentUser, set }) => {
+      // Check if user is already in an active game
+      const activeGame = await Game.findOne({
+        "players.user": currentUser._id,
+        status: { $in: [GAME_STATUS.IN_PROGRESS, GAME_STATUS.PAUSED] },
+      });
+      if (activeGame) {
+        set.status = 400;
+        return errorResponse(`You are already in an active game (${activeGame.code}). Finish or leave it first.`);
+      }
+
       const ticketsPerPlayer = body.ticketsPerPlayer ?? TICKETS_PER_PLAYER.DEFAULT;
       const code = await generateGameCode();
       const game = await Game.create({
@@ -40,6 +51,14 @@ export const gameController = new Elysia({ prefix: "/games" })
         grids.map((grid) => ({ game: game._id, user: currentUser._id, grid }))
       );
 
+      // Auto-start the game immediately
+      game.status = GAME_STATUS.IN_PROGRESS;
+      game.startedAt = new Date();
+      await game.save();
+
+      // Kick off automatic number calling
+      startNumberCalling(game.code);
+
       set.status = 201;
       return successResponse(
         {
@@ -49,29 +68,29 @@ export const gameController = new Elysia({ prefix: "/games" })
           status: game.status,
           maxPlayers: game.maxPlayers,
           ticketsPerPlayer: game.ticketsPerPlayer,
-          numberCallInterval: game.numberCallInterval,
           availablePatterns: game.availablePatterns,
           playerCount: 1,
         },
-        "Game created"
+        "Game created and started"
       );
     },
     createGameSchema
   )
 
-  // List available (waiting) games
+  // List available games (waiting or in progress)
   .get("/", async ({ query }) => {
     const page = parseInt(query.page as string) || 1;
     const limit = parseInt(query.limit as string) || PAGINATION.GAMES_LIST;
     const skip = (page - 1) * limit;
+    const statusFilter = { status: { $in: [GAME_STATUS.WAITING, GAME_STATUS.IN_PROGRESS] } };
     const [games, total] = await Promise.all([
-      Game.find({ status: GAME_STATUS.WAITING })
+      Game.find(statusFilter)
         .populate("host", "username displayName")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
-      Game.countDocuments({ status: GAME_STATUS.WAITING }),
+      Game.countDocuments(statusFilter),
     ]);
     return successResponse(
       {
@@ -152,6 +171,18 @@ export const gameController = new Elysia({ prefix: "/games" })
     );
   })
 
+  // Check if user is already in an active game
+  .get("/active", async ({ currentUser }) => {
+    const activeGame = await Game.findOne({
+      "players.user": currentUser._id,
+      status: { $in: [GAME_STATUS.IN_PROGRESS, GAME_STATUS.PAUSED] },
+    });
+    return successResponse(
+      { activeGame: activeGame ? { code: activeGame.code, status: activeGame.status } : null },
+      activeGame ? "You have an active game" : "No active game"
+    );
+  })
+
   // Get game details
   .get("/:code", async ({ params, set }) => {
     const game = await Game.findOne({ code: params.code.toUpperCase() })
@@ -191,9 +222,19 @@ export const gameController = new Elysia({ prefix: "/games" })
 
   // Join game — auto-generates tickets for the joining player
   .post("/:code/join", async ({ params, currentUser, set }) => {
+    // Check if user is already in an active game
+    const activeGame = await Game.findOne({
+      "players.user": currentUser._id,
+      status: { $in: [GAME_STATUS.IN_PROGRESS, GAME_STATUS.PAUSED] },
+    });
+    if (activeGame && activeGame.code !== params.code.toUpperCase()) {
+      set.status = 400;
+      return errorResponse(`You are already in an active game (${activeGame.code}). Finish or leave it first.`);
+    }
+
     const game = await Game.findOne({ code: params.code.toUpperCase() });
     if (!game) { set.status = 404; return errorResponse("Game not found"); }
-    if (game.status !== GAME_STATUS.WAITING) { set.status = 400; return errorResponse("Game has already started or ended"); }
+    if (game.status === GAME_STATUS.COMPLETED || game.status === GAME_STATUS.PAUSED) { set.status = 400; return errorResponse("Game has ended or is paused"); }
     if (game.players.length >= game.maxPlayers) { set.status = 400; return errorResponse("Game is full"); }
     const alreadyJoined = game.players.some((p) => p.user.toString() === currentUser._id.toString());
     if (alreadyJoined) { set.status = 400; return errorResponse("You have already joined this game"); }
