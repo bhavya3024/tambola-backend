@@ -1,4 +1,4 @@
-import { Game, IGame } from "../../models/game.model";
+import { Game, IGame, WinPattern } from "../../models/game.model";
 import { Ticket } from "../../models/ticket.model";
 import { Types } from "mongoose";
 import {

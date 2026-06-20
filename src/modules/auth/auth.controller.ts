@@ -78,18 +78,72 @@ export const authController = new Elysia({ prefix: "/auth" })
     async ({ body, set }) => {
       const { username, email, password, displayName } = body;
 
-      // Check if user already exists
-      const existingUser = await User.findOne({
-        $or: [{ email }, { username }],
-      });
+      // Check if a user with this email already exists
+      const userWithEmail = await User.findOne({ email }).select(
+        "+emailVerificationToken +emailVerificationExpiry"
+      );
 
-      if (existingUser) {
-        set.status = 409;
-        return errorResponse(
-          existingUser.email === email
-            ? "Email already registered"
-            : "Username already taken"
+      if (userWithEmail) {
+        if (userWithEmail.isEmailVerified) {
+          set.status = 409;
+          return errorResponse("Email already registered");
+        }
+
+        // Email is registered but NOT verified. We can reuse/update this user record.
+        // But first, make sure the requested username is not already taken by ANOTHER user.
+        const userWithUsername = await User.findOne({ username });
+        if (
+          userWithUsername &&
+          userWithUsername._id.toString() !== userWithEmail._id.toString()
+        ) {
+          set.status = 409;
+          return errorResponse("Username already taken");
+        }
+
+        // Hash password using Bun's native argon2id
+        const hashedPassword = await Bun.password.hash(password, {
+          algorithm: PASSWORD_HASH.ALGORITHM,
+          memoryCost: PASSWORD_HASH.MEMORY_COST,
+          timeCost: PASSWORD_HASH.TIME_COST,
+        });
+
+        // Generate verification token
+        const { raw: verifyToken, hashed: hashedVerifyToken } =
+          generateVerificationToken();
+        const verifyExpiry = new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS);
+
+        // Update the existing unverified user details
+        userWithEmail.username = username;
+        userWithEmail.password = hashedPassword;
+        userWithEmail.displayName = displayName;
+        userWithEmail.emailVerificationToken = hashedVerifyToken;
+        userWithEmail.emailVerificationExpiry = verifyExpiry;
+        userWithEmail.refreshToken = undefined;
+        userWithEmail.passwordResetToken = undefined;
+        userWithEmail.passwordResetExpiry = undefined;
+
+        await userWithEmail.save();
+
+        // Send verification email (fire-and-forget, don't block registration)
+        sendVerificationEmail(email, verifyToken, displayName).catch((err) => {
+          console.error("Failed to send verification email:", err);
+        });
+
+        set.status = 200;
+        return successResponse(
+          {
+            email: userWithEmail.email,
+            username: userWithEmail.username,
+          },
+          "Registration successful! Please check your email to verify your account."
         );
+      }
+
+      // If email does not exist, check if username is already taken by any other user
+      const userWithUsername = await User.findOne({ username });
+      if (userWithUsername) {
+        set.status = 409;
+        return errorResponse("Username already taken");
       }
 
       // Hash password using Bun's native argon2id
@@ -100,7 +154,8 @@ export const authController = new Elysia({ prefix: "/auth" })
       });
 
       // Generate verification token
-      const { raw: verifyToken, hashed: hashedVerifyToken } = generateVerificationToken();
+      const { raw: verifyToken, hashed: hashedVerifyToken } =
+        generateVerificationToken();
       const verifyExpiry = new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS);
 
       // Create user (unverified)

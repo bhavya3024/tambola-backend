@@ -33,21 +33,22 @@ const app = new Elysia()
 
   // ─── Global error handler ────────────────────────────────
   .onError(({ code, error, set }) => {
+    const err = error as any;
     if (code === "VALIDATION") {
       set.status = 400;
       return {
         success: false,
         message: "Validation error",
-        errors: error.message,
+        errors: err.message,
       };
     }
 
-    const msg = error.message.toLowerCase();
+    const msg = (err.message || "").toLowerCase();
     if (msg.includes("unauthorized") || msg.includes("invalid") || msg.includes("missing")) {
       set.status = 401;
       return {
         success: false,
-        message: error.message,
+        message: err.message,
       };
     }
 
