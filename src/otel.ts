@@ -13,6 +13,7 @@
 import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { resourceFromAttributes } from "@opentelemetry/resources";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 
 // Enable OTEL diagnostic logging so export errors are visible
 diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.WARN);
@@ -112,6 +113,63 @@ const sdk = new NodeSDK({
 });
 
 sdk.start();
+
+// ── Console Log Bridge ────────────────────────────────────────────────
+const patchConsole = () => {
+  const logger = logs.getLogger("console-capture");
+  const levels = [
+    { name: "log", severity: SeverityNumber.INFO, severityText: "INFO" },
+    { name: "info", severity: SeverityNumber.INFO, severityText: "INFO" },
+    { name: "warn", severity: SeverityNumber.WARN, severityText: "WARN" },
+    { name: "error", severity: SeverityNumber.ERROR, severityText: "ERROR" },
+  ] as const;
+
+  let isLogging = false;
+
+  for (const { name, severity, severityText } of levels) {
+    const original = console[name];
+    if (typeof original !== "function") continue;
+
+    console[name] = (...args: any[]) => {
+      // 1. Always call original console function first to preserve stdout/stderr
+      original.apply(console, args);
+
+      // 2. Prevent infinite loops/re-entrancy
+      if (isLogging) return;
+
+      isLogging = true;
+      try {
+        const message = args
+          .map((arg) => {
+            if (typeof arg === "object") {
+              try {
+                return JSON.stringify(arg);
+              } catch {
+                return String(arg);
+              }
+            }
+            return String(arg);
+          })
+          .join(" ");
+
+        logger.emit({
+          body: message,
+          severityNumber: severity,
+          severityText: severityText,
+        });
+      } catch (err) {
+        // Suppress any errors to prevent application crashes
+      } finally {
+        isLogging = false;
+      }
+    };
+  }
+};
+
+if (hasDynatrace) {
+  patchConsole();
+}
+
 console.log(
   `📡 OpenTelemetry initialised (service=${SERVICE_NAME}, dynatrace=${hasDynatrace ? "enabled" : "disabled"})`
 );
