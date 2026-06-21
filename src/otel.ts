@@ -23,9 +23,9 @@ import {
   ATTR_DEPLOYMENT_ENVIRONMENT_NAME,
 } from "@opentelemetry/semantic-conventions";
 
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
 
 import { SimpleSpanProcessor, ConsoleSpanExporter } from "@opentelemetry/sdk-trace-base";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
