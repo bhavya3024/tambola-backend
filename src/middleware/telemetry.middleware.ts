@@ -3,6 +3,9 @@
  *
  * Records: http.method, http.route, http.target, http.status_code,
  * and marks spans with error status on 5xx responses.
+ *
+ * Uses `{ as: 'global' }` so hooks propagate to ALL routes in the app,
+ * not just routes defined inside this plugin (Elysia v1.x default is local scope).
  */
 
 import { Elysia } from "elysia";
@@ -11,7 +14,7 @@ import { trace, SpanStatusCode, SpanKind, context, propagation } from "@opentele
 const tracer = trace.getTracer("tambola-backend", "1.0.0");
 
 export const telemetryMiddleware = new Elysia({ name: "telemetry" })
-  .derive(({ request }) => {
+  .derive({ as: "global" }, ({ request }) => {
     // Extract any incoming trace context (for distributed tracing)
     const incomingCtx = propagation.extract(context.active(), request.headers, {
       get(carrier: any, key: string) {
@@ -48,7 +51,7 @@ export const telemetryMiddleware = new Elysia({ name: "telemetry" })
     };
   })
 
-  .onAfterHandle(({ _otelSpan, _otelStartTime, set, request }) => {
+  .onAfterHandle({ as: "global" }, ({ _otelSpan, _otelStartTime, set, request }) => {
     if (!_otelSpan) return;
 
     const status = typeof set.status === "number" ? set.status : 200;
@@ -73,10 +76,9 @@ export const telemetryMiddleware = new Elysia({ name: "telemetry" })
     }
 
     _otelSpan.end();
-    console.log(`📡 Span exported: ${request.method} ${url.pathname} → ${status}`);
   })
 
-  .onError(({ _otelSpan, _otelStartTime, error, set }) => {
+  .onError({ as: "global" }, ({ _otelSpan, _otelStartTime, error, set }) => {
     if (!_otelSpan) return;
 
     const status = typeof set.status === "number" ? set.status : 500;
