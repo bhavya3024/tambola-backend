@@ -14,8 +14,9 @@ import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 
-// Enable OTEL diagnostic logging so export errors surface in Heroku logs
-diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.INFO);
+// Enable OTEL diagnostic logging at DEBUG so export attempts/failures are visible
+diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.DEBUG);
+
 import {
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_VERSION,
@@ -75,14 +76,16 @@ const spanProcessor = traceExporter
   : new BatchSpanProcessor(new ConsoleSpanExporter());
 
 // ── Metric exporter ────────────────────────────────────────────────────
-const metricReader = hasDynatrace
-  ? new PeriodicExportingMetricReader({
-      exporter: new OTLPMetricExporter({
-        url: `${DT_ENDPOINT}/v1/metrics`,
-        headers: dtHeaders,
+const metricReaders = hasDynatrace
+  ? [
+      new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter({
+          url: `${DT_ENDPOINT}/v1/metrics`,
+          headers: dtHeaders,
+        }),
+        exportIntervalMillis: 60_000, // export every 60 s
       }),
-      exportIntervalMillis: 60_000, // export every 60 s
-    })
+    ]
   : undefined;
 
 // ── Log exporter ───────────────────────────────────────────────────────
@@ -99,7 +102,7 @@ const logProcessor = hasDynatrace
 const sdk = new NodeSDK({
   resource,
   spanProcessors: [spanProcessor],
-  ...(metricReader ? { metricReader } : {}),
+  ...(metricReaders ? { metricReaders } : {}),
   ...(logProcessor ? { logRecordProcessors: [logProcessor] } : {}),
   instrumentations: [
     new HttpInstrumentation(),
@@ -114,6 +117,35 @@ console.log(
 if (hasDynatrace) {
   console.log(`📡 OTLP trace endpoint: ${DT_ENDPOINT}/v1/traces`);
   console.log(`📡 OTLP token prefix: ${DT_TOKEN?.substring(0, 12)}…`);
+}
+
+// ── Connectivity probe ─────────────────────────────────────────────────
+// Fire a direct HTTP request to verify the endpoint + token are valid.
+// This surfaces auth / network errors immediately on startup.
+if (hasDynatrace) {
+  fetch(`${DT_ENDPOINT}/v1/traces`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-protobuf",
+      ...dtHeaders,
+    },
+    body: new Uint8Array(0), // empty payload — Dynatrace will 400 but not 401/403
+  })
+    .then((res) => {
+      if (res.status === 401 || res.status === 403) {
+        console.error(
+          `❌ Dynatrace OTLP auth FAILED (HTTP ${res.status}). ` +
+            `Check DT_API_TOKEN has scopes: openTelemetryTrace.ingest, metrics.ingest, logs.ingest`
+        );
+      } else {
+        console.log(
+          `✅ Dynatrace OTLP endpoint reachable (HTTP ${res.status} — expected for probe)`
+        );
+      }
+    })
+    .catch((err) => {
+      console.error(`❌ Dynatrace OTLP endpoint unreachable: ${err.message}`);
+    });
 }
 
 // ── Graceful shutdown ──────────────────────────────────────────────────
