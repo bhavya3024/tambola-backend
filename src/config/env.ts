@@ -29,6 +29,11 @@ export const env = {
 
   // Frontend URL for email links
   FRONTEND_URL: process.env.FRONTEND_URL || DEFAULT_FRONTEND_URL,
+
+  // Dynatrace / OpenTelemetry
+  DT_OTLP_ENDPOINT: process.env.DT_OTLP_ENDPOINT || "",
+  DT_API_TOKEN: process.env.DT_API_TOKEN || "",
+  OTEL_SERVICE_NAME: process.env.OTEL_SERVICE_NAME || "tambola-backend",
 } as const;
 
 // Validate critical env vars in production

@@ -1,3 +1,6 @@
+// ⚠️  OpenTelemetry MUST be initialised before any other imports
+import "./otel";
+
 import { Elysia } from "elysia";
 import { cors } from "@elysiajs/cors";
 import { swagger } from "@elysiajs/swagger";
@@ -7,6 +10,7 @@ import { authController } from "./modules/auth/auth.controller";
 import { gameController } from "./modules/game/game.controller";
 import { ticketController } from "./modules/ticket/ticket.controller";
 import { gameWebSocket, setServer, resumeActiveGames } from "./ws/game.ws";
+import { telemetryMiddleware } from "./middleware/telemetry.middleware";
 
 // Connect to MongoDB
 await connectDB();
@@ -14,6 +18,7 @@ await connectDB();
 const app = new Elysia()
   // ─── Plugins ─────────────────────────────────────────────
   .use(cors())
+  .use(telemetryMiddleware)
   .use(
     swagger({
       documentation: {
