@@ -73,6 +73,7 @@ export const telemetryMiddleware = new Elysia({ name: "telemetry" })
     }
 
     _otelSpan.end();
+    console.log(`📡 Span exported: ${request.method} ${url.pathname} → ${status}`);
   })
 
   .onError(({ _otelSpan, _otelStartTime, error, set }) => {

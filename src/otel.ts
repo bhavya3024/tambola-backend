@@ -14,8 +14,8 @@ import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 
-// Enable OTEL diagnostic logging at DEBUG so export attempts/failures are visible
-diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.DEBUG);
+// Enable OTEL diagnostic logging so export errors are visible
+diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.WARN);
 
 import {
   ATTR_SERVICE_NAME,
@@ -27,7 +27,7 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 
-import { BatchSpanProcessor, ConsoleSpanExporter } from "@opentelemetry/sdk-trace-base";
+import { SimpleSpanProcessor, ConsoleSpanExporter } from "@opentelemetry/sdk-trace-base";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 
@@ -70,10 +70,11 @@ const traceExporter = hasDynatrace
     })
   : undefined;
 
-// Use console exporter for local dev when Dynatrace is not configured
+// SimpleSpanProcessor exports each span immediately (BatchSpanProcessor timers
+// don't fire reliably in Bun). Console fallback for local dev.
 const spanProcessor = traceExporter
-  ? new BatchSpanProcessor(traceExporter)
-  : new BatchSpanProcessor(new ConsoleSpanExporter());
+  ? new SimpleSpanProcessor(traceExporter)
+  : new SimpleSpanProcessor(new ConsoleSpanExporter());
 
 // ── Metric exporter ────────────────────────────────────────────────────
 const metricReaders = hasDynatrace
@@ -119,34 +120,6 @@ if (hasDynatrace) {
   console.log(`📡 OTLP token prefix: ${DT_TOKEN?.substring(0, 12)}…`);
 }
 
-// ── Connectivity probe ─────────────────────────────────────────────────
-// Fire a direct HTTP request to verify the endpoint + token are valid.
-// This surfaces auth / network errors immediately on startup.
-if (hasDynatrace) {
-  fetch(`${DT_ENDPOINT}/v1/traces`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-protobuf",
-      ...dtHeaders,
-    },
-    body: new Uint8Array(0), // empty payload — Dynatrace will 400 but not 401/403
-  })
-    .then((res) => {
-      if (res.status === 401 || res.status === 403) {
-        console.error(
-          `❌ Dynatrace OTLP auth FAILED (HTTP ${res.status}). ` +
-            `Check DT_API_TOKEN has scopes: openTelemetryTrace.ingest, metrics.ingest, logs.ingest`
-        );
-      } else {
-        console.log(
-          `✅ Dynatrace OTLP endpoint reachable (HTTP ${res.status} — expected for probe)`
-        );
-      }
-    })
-    .catch((err) => {
-      console.error(`❌ Dynatrace OTLP endpoint unreachable: ${err.message}`);
-    });
-}
 
 // ── Graceful shutdown ──────────────────────────────────────────────────
 const shutdown = async () => {
