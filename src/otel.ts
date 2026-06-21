@@ -10,8 +10,12 @@
  *   OTEL_SERVICE_NAME  – (optional) defaults to "tambola-backend"
  */
 
+import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { resourceFromAttributes } from "@opentelemetry/resources";
+
+// Enable OTEL diagnostic logging so export errors surface in Heroku logs
+diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.INFO);
 import {
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_VERSION,
@@ -30,7 +34,7 @@ import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 import { MongooseInstrumentation } from "@opentelemetry/instrumentation-mongoose";
 
 // ── Configuration ──────────────────────────────────────────────────────
-const DT_ENDPOINT = process.env.DT_OTLP_ENDPOINT; // e.g. https://xyz.live.dynatrace.com/api/v2/otlp
+const DT_ENDPOINT = (process.env.DT_OTLP_ENDPOINT || "").replace(/\/+$/, ""); // strip trailing slash
 const DT_TOKEN = process.env.DT_API_TOKEN;
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || "tambola-backend";
 const ENVIRONMENT = process.env.NODE_ENV || "development";
@@ -107,6 +111,10 @@ sdk.start();
 console.log(
   `📡 OpenTelemetry initialised (service=${SERVICE_NAME}, dynatrace=${hasDynatrace ? "enabled" : "disabled"})`
 );
+if (hasDynatrace) {
+  console.log(`📡 OTLP trace endpoint: ${DT_ENDPOINT}/v1/traces`);
+  console.log(`📡 OTLP token prefix: ${DT_TOKEN?.substring(0, 12)}…`);
+}
 
 // ── Graceful shutdown ──────────────────────────────────────────────────
 const shutdown = async () => {
