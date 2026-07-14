@@ -16,6 +16,7 @@ import {
   validateClaim,
   isGameComplete,
 } from "../modules/game/game.service";
+import { Sentry } from "../sentry";
 
 /**
  * Active game timers — tracks setTimeout IDs for number calling.
@@ -166,6 +167,17 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
       (ws.data as any).username = user.username;
       (ws.data as any).gameCode = code.toUpperCase();
 
+      // Set Sentry user context for this connection
+      Sentry.setUser({ id: user._id.toString(), username: user.username });
+
+      // Breadcrumb: player connected
+      Sentry.addBreadcrumb({
+        category: "ws.game",
+        message: `Player "${user.username}" connected to game ${code.toUpperCase()}`,
+        level: "info",
+        data: { gameCode: code.toUpperCase(), playerCount: game.players.length },
+      });
+
       // Subscribe to the game room
       ws.subscribe(code.toUpperCase());
 
@@ -276,6 +288,13 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
           game.startedAt = new Date();
           await game.save();
 
+          Sentry.addBreadcrumb({
+            category: "ws.game",
+            message: `Game ${gameCode} started by host "${username}"`,
+            level: "info",
+            data: { gameCode, playerCount: game.players.length },
+          });
+
           // Broadcast game started
           ws.publish(
             gameCode,
@@ -324,6 +343,13 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
           // Stop the timer
           stopNumberCalling(gameCode);
 
+          Sentry.addBreadcrumb({
+            category: "ws.game",
+            message: `Game ${gameCode} paused by host "${username}"`,
+            level: "info",
+            data: { gameCode },
+          });
+
           ws.publish(
             gameCode,
             JSON.stringify({
@@ -364,6 +390,13 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
 
           game.status = GAME_STATUS.IN_PROGRESS;
           await game.save();
+
+          Sentry.addBreadcrumb({
+            category: "ws.game",
+            message: `Game ${gameCode} resumed by host "${username}"`,
+            level: "info",
+            data: { gameCode },
+          });
 
           ws.publish(
             gameCode,
@@ -496,6 +529,13 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
             $inc: { "stats.totalClaims": 1 },
           });
 
+          Sentry.addBreadcrumb({
+            category: "ws.game",
+            message: `Player "${username}" won pattern "${pattern}" in game ${gameCode}`,
+            level: "info",
+            data: { gameCode, pattern, username },
+          });
+
           const claimMsg = {
             type: WS_EVENT.CLAIM_RESULT,
             data: {
@@ -534,6 +574,14 @@ export const gameWebSocket = new Elysia({ prefix: "/ws" })
             );
 
             const resolvedEndWinners = await resolveWinnerNames(refreshedGame.winners as any);
+
+            Sentry.addBreadcrumb({
+              category: "ws.game",
+              message: `Game ${gameCode} completed`,
+              level: "info",
+              data: { gameCode, winners: resolvedEndWinners },
+            });
+
             const endMsg = {
               type: WS_EVENT.GAME_ENDED,
               data: {
@@ -650,6 +698,10 @@ export function startNumberCalling(
         scheduleNext();
       } catch (err) {
         console.error(`Error in number calling for game ${gameCode}:`, err);
+        // Report to Sentry — these background timer errors are otherwise invisible
+        Sentry.captureException(err, {
+          tags: { layer: "ws-number-calling", gameCode },
+        });
         // Still try to continue on error
         scheduleNext();
       }

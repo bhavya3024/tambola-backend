@@ -1,9 +1,13 @@
-// ⚠️  OpenTelemetry MUST be initialised before any other imports
+// ⚠️  Sentry MUST be initialised first so it can catch early errors
+import "./sentry";
+
+// ⚠️  OpenTelemetry MUST be initialised before any other application imports
 import "./otel";
 
 import { Elysia } from "elysia";
 import { cors } from "@elysiajs/cors";
 import { swagger } from "@elysiajs/swagger";
+import { Sentry } from "./sentry";
 import { env } from "./config/env";
 import { connectDB } from "./database/connection";
 import { authController } from "./modules/auth/auth.controller";
@@ -58,6 +62,14 @@ const app = new Elysia()
     }
 
     console.error("Unhandled error:", error);
+
+    // Report unexpected 500 errors to Sentry with contextual tags
+    Sentry.withScope((scope) => {
+      scope.setTag("error.code", code);
+      scope.setTag("http.status", 500);
+      Sentry.captureException(error);
+    });
+
     set.status = 500;
     return {
       success: false,

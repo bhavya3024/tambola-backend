@@ -21,6 +21,7 @@ import {
 } from "./auth.schemas";
 import { successResponse, errorResponse } from "../../utils/response";
 import { sendVerificationEmail, sendPasswordResetEmail } from "../../utils/email.service";
+import { Sentry } from "../../sentry";
 
 /**
  * Convert JWT_EXPIRY like "15m" or "7d" into seconds for exp claim.
@@ -302,6 +303,13 @@ export const authController = new Elysia({ prefix: "/auth" })
       });
       await User.findByIdAndUpdate(user._id, { refreshToken: hashedRefreshToken });
 
+      // Identify this user in Sentry for subsequent error attribution
+      Sentry.setUser({
+        id: user._id.toString(),
+        username: user.username,
+        email: user.email,
+      });
+
       return successResponse(
         {
           user: {
@@ -466,6 +474,9 @@ export const authController = new Elysia({ prefix: "/auth" })
     await User.findByIdAndUpdate(currentUser._id, {
       $unset: { refreshToken: 1 },
     });
+
+    // Clear Sentry user context so errors after logout are anonymous
+    Sentry.setUser(null);
 
     return successResponse(null, "Logged out successfully");
   });

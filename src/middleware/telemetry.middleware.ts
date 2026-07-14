@@ -1,98 +1,69 @@
 /**
- * Elysia plugin that wraps each HTTP request in an OpenTelemetry span.
+ * Elysia plugin that enriches the HTTP span created by @sentry/bun's
+ * auto-instrumentation with extra attributes and handles error reporting.
  *
- * Records: http.method, http.route, http.target, http.status_code,
- * and marks spans with error status on 5xx responses.
+ * ⚠️  We do NOT create a new root span here. @sentry/bun already
+ *     auto-instruments Bun's HTTP server (sentry.origin: "auto.http.bun.serve")
+ *     and produces a root span with the correct route template. Creating our
+ *     own root span caused duplicate orphaned spans in Sentry/Dynatrace.
  *
- * Uses `{ as: 'global' }` so hooks propagate to ALL routes in the app,
- * not just routes defined inside this plugin (Elysia v1.x default is local scope).
+ * What this plugin adds:
+ *   - http.duration_ms attribute on the active (auto-instrumented) span
+ *   - Sentry.captureException() + OTel error recording on 5xx/unhandled errors
+ *
+ * Uses `{ as: 'global' }` so hooks propagate to ALL routes in the app.
  */
 
 import { Elysia } from "elysia";
-import { trace, SpanStatusCode, SpanKind, context, propagation } from "@opentelemetry/api";
-
-const tracer = trace.getTracer("tambola-backend", "1.0.0");
+import { trace, SpanStatusCode } from "@opentelemetry/api";
+import { Sentry } from "../sentry";
 
 export const telemetryMiddleware = new Elysia({ name: "telemetry" })
-  .derive({ as: "global" }, ({ request }) => {
-    // Extract any incoming trace context (for distributed tracing)
-    const incomingCtx = propagation.extract(context.active(), request.headers, {
-      get(carrier: any, key: string) {
-        // Elysia `request.headers` is a Headers object
-        return carrier.get(key) ?? undefined;
-      },
-      keys(carrier: any) {
-        return [...carrier.keys()];
-      },
-    });
-
-    const url = new URL(request.url);
-
-    // Start a new span under the extracted (or root) context
-    const span = tracer.startSpan(
-      `${request.method} ${url.pathname}`,
-      {
-        kind: SpanKind.SERVER,
-        attributes: {
-          "http.method": request.method,
-          "http.target": url.pathname + url.search,
-          "http.url": request.url,
-          "http.scheme": url.protocol.replace(":", ""),
-          "http.host": url.host,
-          "http.user_agent": request.headers.get("user-agent") ?? "",
-        },
-      },
-      incomingCtx
-    );
-
-    return {
-      _otelSpan: span,
-      _otelStartTime: performance.now(),
-    };
+  .derive({ as: "global" }, () => {
+    // Record request start time so we can compute duration in later hooks
+    return { _reqStartTime: performance.now() };
   })
 
-  .onAfterHandle({ as: "global" }, ({ _otelSpan, _otelStartTime, set, request }) => {
-    if (!_otelSpan) return;
+  .onAfterHandle({ as: "global" }, ({ _reqStartTime, set }) => {
+    // Enrich @sentry/bun's auto-instrumented span with extra attributes
+    const span = trace.getActiveSpan();
+    if (!span) return;
 
     const status = typeof set.status === "number" ? set.status : 200;
+    const duration = Math.round(performance.now() - (_reqStartTime ?? 0));
 
-    _otelSpan.setAttribute("http.status_code", status);
-    _otelSpan.setAttribute(
-      "http.duration_ms",
-      Math.round(performance.now() - _otelStartTime)
-    );
-
-    // Resolve the route pattern if Elysia provides it
-    const url = new URL(request.url);
-    _otelSpan.setAttribute("http.route", url.pathname);
+    span.setAttribute("http.duration_ms", duration);
+    span.setAttribute("http.status_code", status);
 
     if (status >= 500) {
-      _otelSpan.setStatus({
-        code: SpanStatusCode.ERROR,
-        message: `HTTP ${status}`,
-      });
+      span.setStatus({ code: SpanStatusCode.ERROR, message: `HTTP ${status}` });
     } else {
-      _otelSpan.setStatus({ code: SpanStatusCode.OK });
+      span.setStatus({ code: SpanStatusCode.OK });
     }
-
-    _otelSpan.end();
   })
 
-  .onError({ as: "global" }, ({ _otelSpan, _otelStartTime, error, set }) => {
-    if (!_otelSpan) return;
+  .onError({ as: "global" }, ({ _reqStartTime, error, set }) => {
+    // Enrich the active span with error info
+    const span = trace.getActiveSpan();
 
-    const status = typeof set.status === "number" ? set.status : 500;
-    _otelSpan.setAttribute("http.status_code", status);
-    _otelSpan.setAttribute(
-      "http.duration_ms",
-      Math.round(performance.now() - _otelStartTime)
-    );
+    if (span) {
+      const status = typeof set.status === "number" ? set.status : 500;
+      const duration = Math.round(performance.now() - (_reqStartTime ?? 0));
 
-    _otelSpan.setStatus({
-      code: SpanStatusCode.ERROR,
-      message: error?.message ?? "Unknown error",
+      span.setAttribute("http.duration_ms", duration);
+      span.setAttribute("http.status_code", status);
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: (error as any)?.message ?? "Unknown error",
+      });
+      span.recordException(error as any);
+    }
+
+    // Report to Sentry for error alerting and issue grouping
+    Sentry.captureException(error, {
+      tags: {
+        layer: "http-middleware",
+        "http.status": typeof set.status === "number" ? set.status : 500,
+      },
     });
-
-    _otelSpan.recordException(error);
-    _otelSpan.end();
   });

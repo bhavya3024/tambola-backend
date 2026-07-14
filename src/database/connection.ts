@@ -1,5 +1,11 @@
 import mongoose from "mongoose";
 import { env } from "../config/env";
+import { registerMongooseTracing } from "../utils/mongoose-tracing";
+
+// Register span-per-query tracing via Mongoose's own middleware system.
+// Must run before any Schema/Model is created so the global plugin applies.
+registerMongooseTracing();
+
 
 /**
  * Connect to MongoDB with retry logic.

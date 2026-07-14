@@ -31,9 +31,9 @@ import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
 import { SimpleSpanProcessor, ConsoleSpanExporter } from "@opentelemetry/sdk-trace-base";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { SentrySpanProcessor } from "@sentry/opentelemetry";
 
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
-import { MongooseInstrumentation } from "@opentelemetry/instrumentation-mongoose";
 
 // ── Configuration ──────────────────────────────────────────────────────
 const DT_ENDPOINT = (process.env.DT_OTLP_ENDPOINT || "").replace(/\/+$/, ""); // strip trailing slash
@@ -73,9 +73,14 @@ const traceExporter = hasDynatrace
 
 // SimpleSpanProcessor exports each span immediately (BatchSpanProcessor timers
 // don't fire reliably in Bun). Console fallback for local dev.
-const spanProcessor = traceExporter
+const dynatraceProcessor = traceExporter
   ? new SimpleSpanProcessor(traceExporter)
   : new SimpleSpanProcessor(new ConsoleSpanExporter());
+
+// SentrySpanProcessor forwards spans to Sentry's trace ingest.
+// This works alongside skipOpenTelemetrySetup:true — Sentry's client is already
+// initialised (sentry.ts runs first); we just plug its processor into our pipeline.
+const sentrySpanProcessor = new SentrySpanProcessor();
 
 // ── Metric exporter ────────────────────────────────────────────────────
 const metricReaders = hasDynatrace
@@ -100,15 +105,21 @@ const logProcessor = hasDynatrace
     )
   : undefined;
 
-// ── SDK setup ──────────────────────────────────────────────────────────
+// ── SDK setup ──────────────────────────────────────────────────────────────
 const sdk = new NodeSDK({
   resource,
-  spanProcessors: [spanProcessor],
+  // Both processors run for every span:
+  //   dynatraceProcessor → OTLP to Dynatrace (or console in dev)
+  //   sentrySpanProcessor → Sentry trace ingest
+  spanProcessors: [dynatraceProcessor, sentrySpanProcessor],
   ...(metricReaders ? { metricReaders } : {}),
   ...(logProcessor ? { logRecordProcessors: [logProcessor] } : {}),
   instrumentations: [
+    // Instruments outgoing HTTP/fetch calls as child spans.
+    // Note: MongooseInstrumentation is intentionally omitted — it relies on
+    // Node.js require() hooks which Bun does not implement. Mongoose tracing
+    // is handled by Sentry.mongooseIntegration() in sentry.ts instead.
     new HttpInstrumentation(),
-    new MongooseInstrumentation(),
   ],
 });
 
